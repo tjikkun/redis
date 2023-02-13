@@ -1216,7 +1216,7 @@ int clientHasPendingReplies(client *c) {
 /* Return true if client connected from loopback interface */
 int islocalClient(client *c) {
     /* unix-socket */
-    if (c->flags & CLIENT_UNIX_SOCKET) return 1;
+    if (c->flags & (CLIENT_UNIX_SOCKET | CLIENT_INHERITED_SOCKET)) return 1;
 
     /* tcp */
     char cip[NET_IP_STR_LEN+1] = { 0 };
@@ -1280,7 +1280,7 @@ void clientAcceptHandler(connection *conn) {
 }
 
 #define MAX_ACCEPTS_PER_CALL 1000
-static void acceptCommonHandler(connection *conn, int flags, char *ip) {
+static void acceptCommonHandler(connection *conn, long long unsigned int flags, char *ip) {
     client *c;
     char conninfo[100];
     UNUSED(ip);
@@ -1408,6 +1408,24 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         }
         serverLog(LL_VERBOSE,"Accepted connection to %s", server.unixsocket);
         acceptCommonHandler(connCreateAcceptedSocket(cfd),CLIENT_UNIX_SOCKET,NULL);
+    }
+}
+
+void acceptInheritedHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    int cfd, max = MAX_ACCEPTS_PER_CALL, nsock = (uintptr_t)privdata;
+    UNUSED(el);
+    UNUSED(mask);
+
+    while(max--) {
+        cfd = anetBasicAccept(server.neterr, fd);
+        if (cfd == ANET_ERR) {
+            if (errno != EWOULDBLOCK)
+                serverLog(LL_WARNING,
+                    "Accepting client connection: %s", server.neterr);
+            return;
+        }
+        serverLog(LL_VERBOSE,"Accepted connection to inherited socket #%d", nsock);
+        acceptCommonHandler(connCreateAcceptedSocket(cfd),CLIENT_INHERITED_SOCKET,NULL);
     }
 }
 
@@ -2717,6 +2735,7 @@ done:
  * For IPv4 it's in the form x.y.z.k:port, example: "127.0.0.1:1234".
  * For IPv6 addresses we use [] around the IP part, like in "[::1]:1234".
  * For Unix sockets we use path:0, like in "/tmp/redis:0".
+ * For inherited sockets we use fixed string "inherited:0".
  *
  * An Address String always fits inside a buffer of NET_ADDR_STR_LEN bytes,
  * including the null term.
@@ -2729,6 +2748,9 @@ void genClientAddrString(client *client, char *addr,
     if (client->flags & CLIENT_UNIX_SOCKET) {
         /* Unix socket client. */
         snprintf(addr,addr_len,"%s:0",server.unixsocket);
+    } else if (client->flags & CLIENT_INHERITED_SOCKET) {
+        /* Inherited socket client. */
+        snprintf(addr,addr_len,"inherited:0");
     } else {
         /* TCP client. */
         connFormatFdAddr(client->conn,addr,addr_len,fd_to_str_type);
@@ -2787,6 +2809,7 @@ sds catClientInfoString(sds s, client *client) {
     if (client->flags & CLIENT_UNBLOCKED) *p++ = 'u';
     if (client->flags & CLIENT_CLOSE_ASAP) *p++ = 'A';
     if (client->flags & CLIENT_UNIX_SOCKET) *p++ = 'U';
+    if (client->flags & CLIENT_INHERITED_SOCKET) *p++ = 'I';
     if (client->flags & CLIENT_READONLY) *p++ = 'r';
     if (client->flags & CLIENT_NO_EVICT) *p++ = 'e';
     if (p == flags) *p++ = 'N';

@@ -560,6 +560,10 @@ int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port)
 /* Accept a connection and also make sure the socket is non-blocking, and CLOEXEC.
  * returns the new socket FD, or -1 on error. */
 int anetUnixAccept(char *err, int s) {
+    return anetBasicAccept(err, s);
+}
+
+int anetBasicAccept(char *err, int s) {
     int fd;
     struct sockaddr_un sa;
     socklen_t salen = sizeof(sa);

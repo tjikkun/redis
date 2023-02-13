@@ -1934,7 +1934,7 @@ int modulePopulateClientInfoStructure(void *ci, client *client, int structver) {
         ci1->flags |= REDISMODULE_CLIENTINFO_FLAG_MULTI;
     if (client->flags & CLIENT_PUBSUB)
         ci1->flags |= REDISMODULE_CLIENTINFO_FLAG_PUBSUB;
-    if (client->flags & CLIENT_UNIX_SOCKET)
+    if (client->flags & (CLIENT_UNIX_SOCKET | CLIENT_INHERITED_SOCKET))
         ci1->flags |= REDISMODULE_CLIENTINFO_FLAG_UNIXSOCKET;
     if (client->flags & CLIENT_TRACKING)
         ci1->flags |= REDISMODULE_CLIENTINFO_FLAG_TRACKING;

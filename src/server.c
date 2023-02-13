@@ -58,6 +58,7 @@
 #include <locale.h>
 #include <sys/socket.h>
 #include <sys/resource.h>
+#include <stdlib.h>
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -2661,6 +2662,7 @@ void initServerConfig(void) {
     server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
     server.bindaddr_count = 0;
     server.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
+    server.inhfd.count = 0;
     server.ipfd.count = 0;
     server.tlsfd.count = 0;
     server.sofd = -1;
@@ -3098,6 +3100,26 @@ int listenToPort(int port, socketFds *sfd) {
     return C_OK;
 }
 
+void inheritListenFds(pid_t pid, socketFds *sfd) {
+    const char *e;
+    int n, fd;
+
+    if ((e = getenv("LISTEN_PID")) == NULL || (pid_t)strtoull(e,NULL,10) != pid)
+        return;
+
+    if ((e = getenv("LISTEN_FDS")) == NULL || (n = atoi(e)) <= 0)
+        return;
+
+    /* Inherited FDs start at 3 */
+
+    for (fd = 3; fd < 3+n; fd++) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        sfd->fd[sfd->count] = fd;
+        sfd->count++;
+    }
+    return;
+}
+
 /* Resets the stats that we expose via INFO or other means that we want
  * to reset via CONFIG RESETSTAT. The function is also used in order to
  * initialize these fields in initServer() at server startup. */
@@ -3216,6 +3238,8 @@ void initServer(void) {
     }
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
+    inheritListenFds(server.pid,&server.inhfd);
+
     /* Open the TCP listening socket for the user commands. */
     if (server.port != 0 &&
         listenToPort(server.port,&server.ipfd) == C_ERR) {
@@ -3244,7 +3268,7 @@ void initServer(void) {
     }
 
     /* Abort if there are no listening sockets at all. */
-    if (server.ipfd.count == 0 && server.tlsfd.count == 0 && server.sofd < 0) {
+    if (server.inhfd.count == 0 && server.ipfd.count == 0 && server.tlsfd.count == 0 && server.sofd < 0) {
         serverLog(LL_WARNING, "Configured to not listen anywhere, exiting.");
         exit(1);
     }
@@ -3321,8 +3345,11 @@ void initServer(void) {
         exit(1);
     }
 
-    /* Create an event handler for accepting new connections in TCP and Unix
-     * domain sockets. */
+    /* Create an event handler for accepting new connections in inherited, TCP
+     * and Unix domain sockets. */
+    if (createSocketAcceptHandler(&server.inhfd, acceptInheritedHandler) != C_OK) {
+        serverPanic("Unrecoverable error creating inherited socket accept handler.");
+    }
     if (createSocketAcceptHandler(&server.ipfd, acceptTcpHandler) != C_OK) {
         serverPanic("Unrecoverable error creating TCP socket accept handler.");
     }
@@ -4311,8 +4338,8 @@ void incrementErrorCount(const char *fullerr, size_t namelen) {
 
 /*================================== Shutdown =============================== */
 
-/* Close listening sockets. Also unlink the unix domain socket if
- * unlink_unix_socket is non-zero. */
+/* Close listening sockets, except for inherited. Also unlink the unix domain
+ * socket if unlink_unix_socket is non-zero. */
 void closeListeningSockets(int unlink_unix_socket) {
     int j;
 
@@ -6423,6 +6450,8 @@ int main(int argc, char **argv) {
                 exit(1);
             }
         }
+        if (server.inhfd.count > 0)
+            serverLog(LL_NOTICE,"The server is now ready to accept connections to inherited sockets");
         if (server.ipfd.count > 0 || server.tlsfd.count > 0)
             serverLog(LL_NOTICE,"Ready to accept connections");
         if (server.sofd > 0)
